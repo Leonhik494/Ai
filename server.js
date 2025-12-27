@@ -1,250 +1,117 @@
-// server.js
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const url = require('url');
-const trainingDataArray = require('./training_data'); // Подключаем файл с массивом строк
 
-// --- Класс нейросети ---
-class TextNeuralNetwork {
-    constructor(vocabSize, embeddingDim = 50, hiddenDim = 100, sequenceLength = 3) {
-        this.vocabSize = vocabSize;
-        this.embeddingDim = embeddingDim;
-        this.hiddenDim = hiddenDim;
-        this.sequenceLength = sequenceLength;
-        
-        // Инициализация весов
-        this.embeddings = this.randomMatrix(vocabSize, embeddingDim);
-        this.Wxh = this.randomMatrix(embeddingDim * sequenceLength, hiddenDim);
-        this.Whh = this.randomMatrix(hiddenDim, hiddenDim);
-        this.Why = this.randomMatrix(hiddenDim, vocabSize);
-        this.bh = this.zeros(hiddenDim);
-        this.by = this.zeros(vocabSize);
-        
-        this.hprev = this.zeros(hiddenDim); // Скрытый стейт
-    }
+// Импортируем trainingData из отдельного файла
+const trainingDataArray = require('./trainingData.js'); // Путь к файлу с данными
 
-    randomMatrix(rows, cols) {
-        return Array.from({ length: rows }, () => 
-            Array.from({ length: cols }, () => Math.random() * 0.2 - 0.1)
-        );
-    }
+// --- Нейросеть ---
+function createMarkovChain(text) {
+    const words = text.split(' ');
+    const chain = {};
 
-    zeros(len) {
-        return Array(len).fill(0);
-    }
+    for (let i = 0; i < words.length - 1; i++) {
+        const currentWord = words[i];
+        const nextWord = words[i + 1];
 
-    tanh(x) {
-        if (Array.isArray(x)) {
-            return x.map(v => Math.tanh(v));
+        if (!chain[currentWord]) {
+            chain[currentWord] = [];
         }
-        return Math.tanh(x);
+        chain[currentWord].push(nextWord);
     }
 
-    softmax(arr) {
-        const max = Math.max(...arr);
-        const exps = arr.map(v => Math.exp(v - max));
-        const sum = exps.reduce((a, b) => a + b, 0);
-        return exps.map(v => v / sum);
-    }
-
-    forward(inputs) {
-        let hprev = this.hprev;
-        const xs = [];
-        const hs = [];
-        let hs_t = hprev;
-
-        for (let t = 0; t < inputs.length; t++) {
-            const x = this.embeddings[inputs[t]];
-            xs.push(x);
-            
-            const h_raw = this.matrixAdd(
-                this.matrixVectorMul(this.Wxh, x.flat()),
-                this.matrixVectorMul(this.Whh, hs_t)
-            );
-            hs_t = this.tanh(this.vectorAdd(h_raw, this.bh));
-            hs.push(hs_t);
-        }
-
-        const y_raw = this.matrixVectorMul(this.Why, hs_t);
-        const y = this.softmax(this.vectorAdd(y_raw, this.by));
-        
-        return { y, h: hs_t, hs };
-    }
-
-    matrixVectorMul(matrix, vector) {
-        return matrix.map(row => 
-            row.reduce((sum, val, i) => sum + val * vector[i], 0)
-        );
-    }
-
-    vectorAdd(a, b) {
-        return a.map((val, i) => val + b[i]);
-    }
-
-    matrixAdd(a, b) {
-        return a.map((row, i) => row.map((val, j) => val + b[i][j]));
-    }
-
-    predict(inputIndices) {
-        const result = this.forward(inputIndices);
-        this.hprev = result.h;
-        return result.y;
-    }
-
-    generate(seedIndices, n) {
-        let inputIndices = [...seedIndices];
-        const output = [];
-
-        for (let i = 0; i < n; i++) {
-            const probs = this.predict(inputIndices);
-            const nextIdx = this.sampleFromProbs(probs);
-            output.push(nextIdx);
-            
-            // Сдвигаем окно
-            inputIndices = inputIndices.slice(1);
-            inputIndices.push(nextIdx);
-        }
-        return output;
-    }
-
-    sampleFromProbs(probs) {
-        const r = Math.random();
-        let cumulative = 0;
-        for (let i = 0; i < probs.length; i++) {
-            cumulative += probs[i];
-            if (r <= cumulative) return i;
-        }
-        return probs.length - 1;
-    }
-
-    saveWeights(filename) {
-        const weights = {
-            embeddings: this.embeddings,
-            Wxh: this.Wxh,
-            Whh: this.Whh,
-            Why: this.Why,
-            bh: this.bh,
-            by: this.by,
-            hprev: this.hprev
-        };
-        fs.writeFileSync(filename, JSON.stringify(weights));
-    }
-
-    loadWeights(filename) {
-        if (!fs.existsSync(filename)) return false;
-        const weights = JSON.parse(fs.readFileSync(filename, 'utf8'));
-        this.embeddings = weights.embeddings;
-        this.Wxh = weights.Wxh;
-        this.Whh = weights.Whh;
-        this.Why = weights.Why;
-        this.bh = weights.bh;
-        this.by = weights.by;
-        this.hprev = weights.hprev;
-        return true;
-    }
+    return chain;
 }
 
-// --- Подготовка данных из массива строк ---
-// Объединяем все строки в один текст
+function generateText(markovChain, seed, length = 20) {
+    const words = seed.split(' ');
+    let currentWord = words[words.length - 1];
+
+    for (let i = 0; i < length; i++) {
+        const nextWords = markovChain[currentWord];
+        if (!nextWords || nextWords.length === 0) {
+            break; // Если следующее слово невозможно, останавливаем генерацию
+        }
+        const randomIndex = Math.floor(Math.random() * nextWords.length);
+        const nextWord = nextWords[randomIndex];
+        words.push(nextWord);
+        currentWord = nextWord;
+    }
+
+    return words.join(' ');
+}
+
+// Объединяем все строки из trainingDataArray в одну строку
 const allText = trainingDataArray.join(' ').replace(/\s+/g, ' ').trim();
-const chars = [...new Set(allText)];
-const charToIdx = {};
-const idxToChar = {};
-chars.forEach((char, i) => {
-    charToIdx[char] = i;
-    idxToChar[i] = char;
-});
-const vocabSize = chars.length;
 
-// --- Инициализация и обучение ---
-const nn = new TextNeuralNetwork(vocabSize);
+// Создаем цепочку Маркова из обучающих данных
+const markovChain = createMarkovChain(allText);
 
-// Загружаем веса, если они есть
-const weightsFile = 'model_weights.json';
-if (!nn.loadWeights(weightsFile)) {
-    console.log('Обучение модели...');
-    // Простое обучение: генерация последовательностей
-    // В реальном сценарии тут был бы полноценный цикл обучения
-    // Для упрощения просто сохраняем случайные веса
-    nn.saveWeights(weightsFile);
-    console.log('Модель обучена и веса сохранены.');
-} else {
-    console.log('Веса модели загружены.');
-}
-
-// --- HTTP-сервер ---
+// --- Веб-сервер ---
 const server = http.createServer((req, res) => {
     const parsedUrl = url.parse(req.url, true);
     const pathname = parsedUrl.pathname;
 
-    // CORS
+    // Настройка CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
+    // Обработка OPTIONS запросов для CORS
     if (req.method === 'OPTIONS') {
-        res.writeHead(204);
+        res.writeHead(204); // No Content
         res.end();
         return;
     }
 
-    if (pathname === '/generate' && req.method === 'POST') {
+    if (pathname === '/' && req.method === 'GET') {
+        // Отправляем frontend.html
+        const filePath = path.join(__dirname, 'frontend.html');
+        fs.readFile(filePath, (err, content) => {
+            if (err) {
+                res.writeHead(500);
+                res.end('Error loading frontend.');
+                console.error("Error reading frontend.html:", err);
+            } else {
+                res.writeHead(200, { 'Content-Type': 'text/html' });
+                res.end(content);
+            }
+        });
+    } else if (pathname === '/generate' && req.method === 'POST') {
         let body = '';
         req.on('data', chunk => {
             body += chunk.toString();
         });
         req.on('end', () => {
             try {
-                const data = JSON.parse(body);
-                const inputText = data.text || '';
-                
-                if (inputText.length === 0) {
+                const { input } = JSON.parse(body);
+                if (typeof input !== 'string' || input.trim() === '') {
                     res.writeHead(400, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: 'Пустой текст' }));
+                    res.end(JSON.stringify({ error: 'Invalid input: expected a non-empty string.' }));
                     return;
                 }
 
-                // Подготовка входной последовательности
-                const sequenceLength = nn.sequenceLength;
-                let inputSequence = inputText.slice(-sequenceLength);
-                if (inputSequence.length < sequenceLength) {
-                    inputSequence = ' '.repeat(sequenceLength - inputSequence.length) + inputSequence;
-                }
-                
-                const inputIndices = inputSequence.split('').map(char => charToIdx[char] !== undefined ? charToIdx[char] : 0);
-                
-                // Генерация
-                const generatedIndices = nn.generate(inputIndices, 20);
-                const generatedText = generatedIndices.map(idx => idxToChar[idx]).join('');
+                // Генерируем текст
+                const generated = generateText(markovChain, input.trim(), 50); // Длина 50 слов
 
                 res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ output: generatedText }));
-            } catch (e) {
-                console.error(e);
-                res.writeHead(500, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ error: 'Ошибка сервера' }));
-            }
-        });
-    } else if (pathname === '/' && req.method === 'GET') {
-        // Отдаём HTML файл
-        const filePath = path.join(__dirname, 'frontend.html');
-        fs.readFile(filePath, (err, content) => {
-            if (err) {
-                res.writeHead(404);
-                res.end('File not found');
-            } else {
-                res.writeHead(200, { 'Content-Type': 'text/html' });
-                res.end(content);
+                res.end(JSON.stringify({ output: generated }));
+            } catch (error) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Invalid JSON or missing input field.' }));
+                console.error("Error processing generate request:", error);
             }
         });
     } else {
-        res.writeHead(404);
-        res.end('Not Found');
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Not Found' }));
     }
 });
 
-const PORT = process.env.PORT || 3000;
+// Используем переменную окружения PORT или 10000 по умолчанию
+const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => {
-    console.log(`Сервер запущен на порту ${PORT}`);
+    console.log(`Server running on port ${PORT}`);
+    console.log(`Training data loaded: ${trainingDataArray.length} entries`);
 });
