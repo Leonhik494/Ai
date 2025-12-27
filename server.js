@@ -25,21 +25,73 @@ function createMarkovChain(text) {
 }
 
 function generateText(markovChain, seed, length = 20) {
-    const words = seed.split(' ');
-    let currentWord = words[words.length - 1];
+    // Разбиваем семя на слова
+    const seedWords = seed.split(' ').filter(word => word.trim() !== '');
+    if (seedWords.length === 0) {
+        // Если семя пустое, начать с случайного слова из цепочки
+        const startWords = Object.keys(markovChain);
+        if (startWords.length === 0) return "Training data is empty.";
+        let currentWord = startWords[Math.floor(Math.random() * startWords.length)];
+        const words = [currentWord];
 
-    for (let i = 0; i < length; i++) {
+        for (let i = 0; i < length - 1; i++) { // -1 потому что первое слово уже добавлено
+            const nextWords = markovChain[currentWord];
+            if (!nextWords || nextWords.length === 0) {
+                 // Если нет следующего слова, останавливаем генерацию
+                 break;
+            }
+            const randomIndex = Math.floor(Math.random() * nextWords.length);
+            const nextWord = nextWords[randomIndex];
+            words.push(nextWord);
+            currentWord = nextWord;
+        }
+        return words.join(' ');
+    } else {
+        // Используем последнее слово из семени как начальное состояние
+        // (или последнее слово, если в семени несколько)
+        let currentWord = seedWords[seedWords.length - 1]; // Берем последнее слово из семени
+
+        // Начинаем генерацию, но не включаем само семя в начало результата
+        // Вместо этого сразу ищем следующее слово после currentWord
         const nextWords = markovChain[currentWord];
         if (!nextWords || nextWords.length === 0) {
-            break; // Если следующее слово невозможно, останавливаем генерацию
+             // Если после seed-слова в цепочке нет продолжения, возвращаем семя или сообщение
+             // return seed; // Это приведет к повторению
+             // Лучше попробовать начать с другого слова из семени или случайного
+             // Но для простоты, если нет продолжения после последнего слова, пробуем с первого
+             const firstSeedWord = seedWords[0];
+             if (markovChain[firstSeedWord] && markovChain[firstSeedWord].length > 0) {
+                 currentWord = firstSeedWord;
+             } else {
+                 // Если и с первым словом нет продолжения, возвращаем сообщение
+                 return "Не могу продолжить фразу '" + seed + "'. Попробуйте другое.";
+             }
         }
-        const randomIndex = Math.floor(Math.random() * nextWords.length);
-        const nextWord = nextWords[randomIndex];
-        words.push(nextWord);
-        currentWord = nextWord;
-    }
 
-    return words.join(' ');
+        const generatedWords = [];
+        let attempts = 0; // Ограничим количество попыток, чтобы избежать бесконечного цикла
+        const maxAttempts = length * 2; // Допустим, в 2 раза больше длины
+
+        while (generatedWords.length < length && attempts < maxAttempts) {
+            const nextWords = markovChain[currentWord];
+            if (!nextWords || nextWords.length === 0) {
+                 break; // Если нет следующего слова, останавливаем генерацию
+            }
+            const randomIndex = Math.floor(Math.random() * nextWords.length);
+            const nextWord = nextWords[randomIndex];
+            generatedWords.push(nextWord);
+            currentWord = nextWord;
+            attempts++;
+        }
+
+        // Возвращаем сгенерированный текст, НЕ включая исходное семя
+        if (generatedWords.length > 0) {
+            return generatedWords.join(' ');
+        } else {
+            // Если не удалось сгенерировать ничего нового
+            return "Попробуйте более распространённое слово или фразу.";
+        }
+    }
 }
 
 // Объединяем все строки из trainingDataArray в одну строку
