@@ -1,8 +1,20 @@
 {
-  "name": "neural-chat-10langs",
+  "name": "text-generation-neural-network",
   "version": "1.0.0",
+  "description": "Нейросеть для генерации текста на основе встроенных библиотек Node.js",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
+  },
+  "keywords": [
+    "neural-network",
+    "text-generation",
+    "javascript",
+    "nodejs"
+  ],
+  "author": "leon",
+  "license": "MIT",
+  "engines": {
+    "node": ">=14.0.0"
   }
 }

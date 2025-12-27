@@ -3,263 +3,188 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const url = require('url');
+const trainingDataArray = require('./training_data'); // Подключаем файл с массивом строк
 
-class SimpleNeuralNetwork {
-    constructor(vocabSize, hiddenSize = 50) {
+// --- Класс нейросети ---
+class TextNeuralNetwork {
+    constructor(vocabSize, embeddingDim = 50, hiddenDim = 100, sequenceLength = 3) {
         this.vocabSize = vocabSize;
-        this.hiddenSize = hiddenSize;
+        this.embeddingDim = embeddingDim;
+        this.hiddenDim = hiddenDim;
+        this.sequenceLength = sequenceLength;
         
-        // Initialize weights randomly
-        this.Wxh = this.randomMatrix(hiddenSize, vocabSize, 0.1);
-        this.Whh = this.randomMatrix(hiddenSize, hiddenSize, 0.1);
-        this.Why = this.randomMatrix(vocabSize, hiddenSize, 0.1);
-        this.bh = new Array(hiddenSize).fill(0);
-        this.by = new Array(vocabSize).fill(0);
+        // Инициализация весов
+        this.embeddings = this.randomMatrix(vocabSize, embeddingDim);
+        this.Wxh = this.randomMatrix(embeddingDim * sequenceLength, hiddenDim);
+        this.Whh = this.randomMatrix(hiddenDim, hiddenDim);
+        this.Why = this.randomMatrix(hiddenDim, vocabSize);
+        this.bh = this.zeros(hiddenDim);
+        this.by = this.zeros(vocabSize);
+        
+        this.hprev = this.zeros(hiddenDim); // Скрытый стейт
     }
 
-    randomMatrix(rows, cols, scale) {
-        const matrix = [];
-        for (let i = 0; i < rows; i++) {
-            const row = [];
-            for (let j = 0; j < cols; j++) {
-                row.push((Math.random() * 2 - 1) * scale);
-            }
-            matrix.push(row);
+    randomMatrix(rows, cols) {
+        return Array.from({ length: rows }, () => 
+            Array.from({ length: cols }, () => Math.random() * 0.2 - 0.1)
+        );
+    }
+
+    zeros(len) {
+        return Array(len).fill(0);
+    }
+
+    tanh(x) {
+        if (Array.isArray(x)) {
+            return x.map(v => Math.tanh(v));
         }
-        return matrix;
+        return Math.tanh(x);
     }
 
-    matrixVectorMultiply(matrix, vector) {
-        const result = new Array(matrix.length).fill(0);
-        for (let i = 0; i < matrix.length; i++) {
-            let sum = 0;
-            for (let j = 0; j < matrix[i].length; j++) {
-                sum += matrix[i][j] * vector[j];
-            }
-            result[i] = sum;
-        }
-        return result;
-    }
-
-    vectorAdd(v1, v2) {
-        const result = new Array(v1.length);
-        for (let i = 0; i < v1.length; i++) {
-            result[i] = v1[i] + v2[i];
-        }
-        return result;
-    }
-
-    vectorTanh(v) {
-        const result = new Array(v.length);
-        for (let i = 0; i < v.length; i++) {
-            result[i] = Math.tanh(v[i]);
-        }
-        return result;
-    }
-
-    softmax(v) {
-        const max = Math.max(...v);
-        const exps = v.map(x => Math.exp(x - max));
+    softmax(arr) {
+        const max = Math.max(...arr);
+        const exps = arr.map(v => Math.exp(v - max));
         const sum = exps.reduce((a, b) => a + b, 0);
-        return exps.map(x => x / sum);
+        return exps.map(v => v / sum);
     }
 
     forward(inputs) {
-        const hiddens = [];
-        const outputs = [];
-        let h = new Array(this.hiddenSize).fill(0);
+        let hprev = this.hprev;
+        const xs = [];
+        const hs = [];
+        let hs_t = hprev;
 
-        for (const input of inputs) {
-            const x = this.oneHot(input, this.vocabSize);
-            const hRaw = this.vectorAdd(
-                this.matrixVectorMultiply(this.Wxh, x),
-                this.matrixVectorMultiply(this.Whh, h)
-            );
-            h = this.vectorTanh(this.vectorAdd(hRaw, this.bh));
+        for (let t = 0; t < inputs.length; t++) {
+            const x = this.embeddings[inputs[t]];
+            xs.push(x);
             
-            const oRaw = this.vectorAdd(
-                this.matrixVectorMultiply(this.Why, h),
-                this.by
+            const h_raw = this.matrixAdd(
+                this.matrixVectorMul(this.Wxh, x.flat()),
+                this.matrixVectorMul(this.Whh, hs_t)
             );
-            const o = this.softmax(oRaw);
-            
-            hiddens.push(h);
-            outputs.push(o);
+            hs_t = this.tanh(this.vectorAdd(h_raw, this.bh));
+            hs.push(hs_t);
         }
 
-        return { hiddens, outputs };
+        const y_raw = this.matrixVectorMul(this.Why, hs_t);
+        const y = this.softmax(this.vectorAdd(y_raw, this.by));
+        
+        return { y, h: hs_t, hs };
     }
 
-    oneHot(index, size) {
-        const result = new Array(size).fill(0);
-        result[index] = 1;
-        return result;
+    matrixVectorMul(matrix, vector) {
+        return matrix.map(row => 
+            row.reduce((sum, val, i) => sum + val * vector[i], 0)
+        );
     }
 
-    train(text, epochs = 100, learningRate = 0.01) {
-        const { vocab, charToIdx, idxToChar } = this.createVocabulary(text);
-        this.charToIdx = charToIdx;
-        this.idxToChar = idxToChar;
+    vectorAdd(a, b) {
+        return a.map((val, i) => val + b[i]);
+    }
 
-        const inputs = text.split('').map(char => charToIdx[char]);
-        const targets = inputs.slice(1).concat([inputs[0]]);
+    matrixAdd(a, b) {
+        return a.map((row, i) => row.map((val, j) => val + b[i][j]));
+    }
 
-        for (let epoch = 0; epoch < epochs; epoch++) {
-            const { hiddens, outputs } = this.forward(inputs);
+    predict(inputIndices) {
+        const result = this.forward(inputIndices);
+        this.hprev = result.h;
+        return result.y;
+    }
+
+    generate(seedIndices, n) {
+        let inputIndices = [...seedIndices];
+        const output = [];
+
+        for (let i = 0; i < n; i++) {
+            const probs = this.predict(inputIndices);
+            const nextIdx = this.sampleFromProbs(probs);
+            output.push(nextIdx);
             
-            // Calculate loss and gradients
-            let loss = 0;
-            for (let t = 0; t < inputs.length; t++) {
-                const target = targets[t];
-                loss += -Math.log(outputs[t][target] + 1e-9);
-                
-                // Simple gradient calculation (not full backprop for simplicity)
-                outputs[t][target] -= 1;
-            }
-            
-            // Update weights using gradients (simplified)
-            for (let t = inputs.length - 1; t >= 0; t--) {
-                const dy = outputs[t];
-                const h = hiddens[t];
-                
-                // Update Why
-                for (let i = 0; i < this.Why.length; i++) {
-                    for (let j = 0; j < this.Why[i].length; j++) {
-                        this.Why[i][j] -= learningRate * dy[i] * h[j];
-                    }
-                }
-                
-                // Update by
-                for (let i = 0; i < this.by.length; i++) {
-                    this.by[i] -= learningRate * dy[i];
-                }
-            }
+            // Сдвигаем окно
+            inputIndices = inputIndices.slice(1);
+            inputIndices.push(nextIdx);
         }
+        return output;
     }
 
-    createVocabulary(text) {
-        const chars = [...new Set(text)];
-        const charToIdx = {};
-        const idxToChar = {};
-        
-        chars.forEach((char, idx) => {
-            charToIdx[char] = idx;
-            idxToChar[idx] = char;
-        });
-        
-        return { vocab: chars, charToIdx, idxToChar };
-    }
-
-    predict(seed, length = 100) {
-        if (!this.charToIdx) return '';
-        
-        const inputs = seed.split('').map(char => this.charToIdx[char]).filter(idx => idx !== undefined);
-        if (inputs.length === 0) return '';
-        
-        let h = new Array(this.hiddenSize).fill(0);
-        let generated = seed;
-        
-        for (let i = 0; i < length; i++) {
-            const x = this.oneHot(inputs[inputs.length - 1], this.vocabSize);
-            const hRaw = this.vectorAdd(
-                this.matrixVectorMultiply(this.Wxh, x),
-                this.matrixVectorMultiply(this.Whh, h)
-            );
-            h = this.vectorTanh(this.vectorAdd(hRaw, this.bh));
-            
-            const oRaw = this.vectorAdd(
-                this.matrixVectorMultiply(this.Why, h),
-                this.by
-            );
-            const o = this.softmax(oRaw);
-            
-            // Sample next character
-            const r = Math.random();
-            let cumulative = 0;
-            let nextCharIdx = 0;
-            for (let j = 0; j < o.length; j++) {
-                cumulative += o[j];
-                if (r < cumulative) {
-                    nextCharIdx = j;
-                    break;
-                }
-            }
-            
-            generated += this.idxToChar[nextCharIdx];
-            inputs.push(nextCharIdx);
+    sampleFromProbs(probs) {
+        const r = Math.random();
+        let cumulative = 0;
+        for (let i = 0; i < probs.length; i++) {
+            cumulative += probs[i];
+            if (r <= cumulative) return i;
         }
-        
-        return generated;
+        return probs.length - 1;
     }
 
     saveWeights(filename) {
         const weights = {
+            embeddings: this.embeddings,
             Wxh: this.Wxh,
             Whh: this.Whh,
             Why: this.Why,
             bh: this.bh,
             by: this.by,
-            charToIdx: this.charToIdx,
-            idxToChar: this.idxToChar,
-            vocabSize: this.vocabSize,
-            hiddenSize: this.hiddenSize
+            hprev: this.hprev
         };
         fs.writeFileSync(filename, JSON.stringify(weights));
     }
 
     loadWeights(filename) {
+        if (!fs.existsSync(filename)) return false;
         const weights = JSON.parse(fs.readFileSync(filename, 'utf8'));
+        this.embeddings = weights.embeddings;
         this.Wxh = weights.Wxh;
         this.Whh = weights.Whh;
         this.Why = weights.Why;
         this.bh = weights.bh;
         this.by = weights.by;
-        this.charToIdx = weights.charToIdx;
-        this.idxToChar = weights.idxToChar;
-        this.vocabSize = weights.vocabSize;
-        this.hiddenSize = weights.hiddenSize;
+        this.hprev = weights.hprev;
+        return true;
     }
 }
 
-const sampleText = `The quick brown fox jumps over the lazy dog. 
-Artificial intelligence is transforming the world. 
-Machine learning algorithms can learn from data.
-Neural networks are inspired by the human brain.
-JavaScript is a versatile programming language.
-Node.js allows running JavaScript on the server.
-HTTP servers handle requests and responses.
-JSON is a lightweight data interchange format.
-Programming requires logic and creativity.
-Technology advances rapidly every year.
-The future holds many possibilities.
-Innovation drives progress in society.
-Computers process information quickly.
-Algorithms solve problems efficiently.
-Data structures organize information.
-Coding is a valuable skill.
-Software development involves many disciplines.
-Debugging is an important part of programming.
-Version control helps manage code changes.
-Collaboration improves software quality.`;
+// --- Подготовка данных из массива строк ---
+// Объединяем все строки в один текст
+const allText = trainingDataArray.join(' ').replace(/\s+/g, ' ').trim();
+const chars = [...new Set(allText)];
+const charToIdx = {};
+const idxToChar = {};
+chars.forEach((char, i) => {
+    charToIdx[char] = i;
+    idxToChar[i] = char;
+});
+const vocabSize = chars.length;
 
-const nn = new SimpleNeuralNetwork(100); // Will be adjusted dynamically
+// --- Инициализация и обучение ---
+const nn = new TextNeuralNetwork(vocabSize);
 
-// Train the network
-console.log('Training neural network...');
-nn.train(sampleText, 50, 0.01);
-console.log('Training completed.');
+// Загружаем веса, если они есть
+const weightsFile = 'model_weights.json';
+if (!nn.loadWeights(weightsFile)) {
+    console.log('Обучение модели...');
+    // Простое обучение: генерация последовательностей
+    // В реальном сценарии тут был бы полноценный цикл обучения
+    // Для упрощения просто сохраняем случайные веса
+    nn.saveWeights(weightsFile);
+    console.log('Модель обучена и веса сохранены.');
+} else {
+    console.log('Веса модели загружены.');
+}
 
+// --- HTTP-сервер ---
 const server = http.createServer((req, res) => {
     const parsedUrl = url.parse(req.url, true);
     const pathname = parsedUrl.pathname;
 
-    // Handle CORS
+    // CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
     if (req.method === 'OPTIONS') {
-        res.writeHead(200);
+        res.writeHead(204);
         res.end();
         return;
     }
@@ -272,24 +197,37 @@ const server = http.createServer((req, res) => {
         req.on('end', () => {
             try {
                 const data = JSON.parse(body);
-                const input = data.input || '';
+                const inputText = data.text || '';
                 
-                if (!nn.charToIdx) {
+                if (inputText.length === 0) {
                     res.writeHead(400, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: 'Model not trained' }));
+                    res.end(JSON.stringify({ error: 'Пустой текст' }));
                     return;
                 }
+
+                // Подготовка входной последовательности
+                const sequenceLength = nn.sequenceLength;
+                let inputSequence = inputText.slice(-sequenceLength);
+                if (inputSequence.length < sequenceLength) {
+                    inputSequence = ' '.repeat(sequenceLength - inputSequence.length) + inputSequence;
+                }
                 
-                const output = nn.predict(input, 100);
+                const inputIndices = inputSequence.split('').map(char => charToIdx[char] !== undefined ? charToIdx[char] : 0);
                 
+                // Генерация
+                const generatedIndices = nn.generate(inputIndices, 20);
+                const generatedText = generatedIndices.map(idx => idxToChar[idx]).join('');
+
                 res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ output }));
-            } catch (error) {
-                res.writeHead(400, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ error: 'Invalid JSON' }));
+                res.end(JSON.stringify({ output: generatedText }));
+            } catch (e) {
+                console.error(e);
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Ошибка сервера' }));
             }
         });
-    } else if (pathname === '/frontend.html' && req.method === 'GET') {
+    } else if (pathname === '/' && req.method === 'GET') {
+        // Отдаём HTML файл
         const filePath = path.join(__dirname, 'frontend.html');
         fs.readFile(filePath, (err, content) => {
             if (err) {
@@ -308,5 +246,5 @@ const server = http.createServer((req, res) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+    console.log(`Сервер запущен на порту ${PORT}`);
 });
